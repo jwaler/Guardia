@@ -9,16 +9,18 @@
       22 OU          GUARDIA, ses 5 OU de premier niveau, les 9 OU de service,
                      Metier / Ressources / Administration, Postes-Fixes /
                      Portables / Serveurs, et Quarantaine à la racine du domaine
-      22 groupes     10 GG_ (9 services + GG_Tous-Salaries), 9 DL_, T0_ T1_ T2_
+      22 groupes     10 GG_ (9 services + GG_Tous-Salaries), 9 DL_, T0_ T1_ T2_,
+                     et les emboîtements GG_ -> DL_ (AGDLP)
       100 comptes    p.nom@guardia.lab, rangés dans l'OU de leur service et dans
                      leur GG_, mot de passe aléatoire à changer au premier logon
       6 comptes adm- un par informaticien, T0_Admins-AD + Admins du domaine,
                      et le PSO-Admins (20 caractères, 90 jours)
       38 ordinateurs PC-COM-01..18 (Postes-Fixes), PT-NOM-01..20 (Portables),
                      puis redircmp / redirusr
-      SRV01          rôle serveur de fichiers, D:\Partages\..., D:\Home,
-                     9 partages, droits de partage et NTFS (AGDLP), dossiers H:
-      1 GPO          U_FIN_Finance_LecteurS (lecteur S: de la Finance)
+
+    Le script s'arrête à l'annuaire. Le serveur de fichiers, les partages,
+    les droits NTFS sur les groupes DL_, les dossiers personnels et les
+    lecteurs réseau se font ensuite à la main, dans la suite de la procédure.
 
     Idempotent : chaque objet est testé avant d'être créé ; relancer le script
     affiche « deja la » pour ce qui existe et ne crée que ce qui manque.
@@ -44,8 +46,7 @@
               pendant CE lancement. À supprimer après distribution.
 
     À lancer sur DC01, dans un PowerShell ouvert en administrateur, avec un
-    compte Admins du domaine. SRV01 doit être membre du domaine, joignable en
-    WinRM, et avoir un disque de données D: (NTFS).
+    compte Admins du domaine.
 
     Les chaînes affichées sont volontairement SANS accents : la console de
     Windows PowerShell 5.1 les abîme selon la page de code.
@@ -53,12 +54,9 @@
 .PARAMETER Domaine
     Nom DNS du domaine (défaut guardia.lab).
 
-.PARAMETER ServeurFichiers
-    Nom du serveur de fichiers (défaut SRV01).
-
 .PARAMETER WhatIf
-    Simulation : le script lit l'annuaire et SRV01, affiche ce qu'il ferait,
-    et n'écrit RIEN (ni objet AD, ni fichier, ni partage).
+    Simulation : le script lit l'annuaire, affiche ce qu'il ferait,
+    et n'écrit RIEN (ni objet AD, ni fichier).
 
 .EXAMPLE
     Set-ExecutionPolicy -Scope Process Bypass; .\deploy-pme-100.ps1
@@ -68,7 +66,6 @@
 #>
 param(
     [string]$Domaine = 'guardia.lab',
-    [string]$ServeurFichiers = 'SRV01',
     [switch]$WhatIf
 )
 
@@ -76,7 +73,6 @@ param(
 $DossierLab   = 'C:\Lab'
 $CsvSalaries  = Join-Path $DossierLab 'salaries.csv'
 $CsvMdp       = Join-Path $DossierLab 'mots-de-passe.csv'
-$GpoLecteurS  = 'U_FIN_Finance_LecteurS'
 
 # Les 9 services : nom de l'OU (= nom du groupe GG_), code, effectif, lettre de bureau
 $Services = @(
@@ -150,31 +146,9 @@ $TpComptes = @(
 $TpGpo     = @('U_Finance_PanneauConfig', 'U_Finance_EcranVeille', 'U_Finance_USB')
 $LoginsTp  = @($TpComptes | ForEach-Object { $_.Login })
 
-# Les 9 partages (procédure, étape « Le plan : les partages et leurs droits »)
-$Partages = @(
-    @{ Nom = 'Commun';     Chemin = 'D:\Partages\Commun' }
-    @{ Nom = 'Echange';    Chemin = 'D:\Partages\Echange' }
-    @{ Nom = 'Direction$'; Chemin = 'D:\Partages\Direction' }
-    @{ Nom = 'RH$';        Chemin = 'D:\Partages\RH' }
-    @{ Nom = 'Finance$';   Chemin = 'D:\Partages\Finance' }
-    @{ Nom = 'Commercial'; Chemin = 'D:\Partages\Commercial' }
-    @{ Nom = 'Technique';  Chemin = 'D:\Partages\Technique' }
-    @{ Nom = 'Logiciels';  Chemin = 'D:\Partages\Logiciels' }
-    @{ Nom = 'Home$';      Chemin = 'D:\Home' }
-)
-# Les droits NTFS : un groupe DL_ par dossier et par niveau de droit
-$DroitsNtfs = @(
-    @{ Chemin = 'D:\Partages\Commun';     Groupe = 'DL_Commun_Modif';      Droit = 'Modify' }
-    @{ Chemin = 'D:\Partages\Echange';    Groupe = 'DL_Echange_Modif';     Droit = 'Modify' }
-    @{ Chemin = 'D:\Partages\Direction';  Groupe = 'DL_Direction_Modif';   Droit = 'Modify' }
-    @{ Chemin = 'D:\Partages\RH';         Groupe = 'DL_RH_Modif';          Droit = 'Modify' }
-    @{ Chemin = 'D:\Partages\Finance';    Groupe = 'DL_Finance_Modif';     Droit = 'Modify' }
-    @{ Chemin = 'D:\Partages\Commercial'; Groupe = 'DL_Commercial_Modif';  Droit = 'Modify' }
-    @{ Chemin = 'D:\Partages\Technique';  Groupe = 'DL_Technique_Modif';   Droit = 'Modify' }
-    @{ Chemin = 'D:\Partages\Logiciels';  Groupe = 'DL_Logiciels_Lecture'; Droit = 'ReadAndExecute' }
-    @{ Chemin = 'D:\Partages\Logiciels';  Groupe = 'DL_Logiciels_Modif';   Droit = 'Modify' }
-)
-# Les emboîtements AGDLP, exactement ceux de la procédure
+# Les emboîtements AGDLP, exactement ceux de la procédure. Le script crée les
+# 9 groupes DL_ et y met les GG_ ; les droits de ces DL_ sur les dossiers et
+# les partages se posent plus tard, à la main, dans la procédure.
 $Emboitements = @(
     @{ DL = 'DL_Commun_Modif';      GG = @('GG_Tous-Salaries') }
     @{ DL = 'DL_Echange_Modif';     GG = @('GG_Tous-Salaries') }
@@ -192,7 +166,7 @@ $script:Simu    = $WhatIf.IsPresent
 $script:AdOk    = $false
 $script:Bloc    = ''
 $script:Stats   = [ordered]@{}
-$script:Totaux  = @{ OU = 0; Comptes = 0; Groupes = 0; Partages = 0; Ordinateurs = 0; Adm = 0 }
+$script:Totaux  = @{ OU = 0; Comptes = 0; Groupes = 0; Ordinateurs = 0; Adm = 0 }
 $script:NbErreurs = 0
 $script:MotsDePasse = New-Object System.Collections.Generic.List[object]
 
@@ -383,45 +357,6 @@ if ($script:AdOk) {
     $daNom   = 'Admins du domaine'
 }
 Write-Host ("  domaine   : $Domaine ($dn), NetBIOS $netbios") -ForegroundColor Gray
-
-# SRV01 : membre du domaine, joignable en WinRM, avec un disque D: fixe en NTFS
-$srvOk = $true
-if ($script:AdOk -and -not (Get-ADComputer -Filter "Name -eq '$ServeurFichiers'")) {
-    $srvOk = $false
-    $msg = "$ServeurFichiers n est pas membre du domaine $Domaine (compte d ordinateur absent)."
-}
-if ($srvOk) {
-    try { $null = Test-WSMan -ComputerName $ServeurFichiers -ErrorAction Stop }
-    catch { $srvOk = $false; $msg = "$ServeurFichiers ne repond pas en WinRM (Test-WSMan). Sur $ServeurFichiers : Enable-PSRemoting -Force." }
-}
-if ($srvOk) {
-    try {
-        $etatD = Invoke-Command -ComputerName $ServeurFichiers -ErrorAction Stop -ScriptBlock {
-            $v = Get-Volume -DriveLetter D -ErrorAction SilentlyContinue
-            if ($v) { '{0}|{1}|{2}' -f $v.DriveType, $v.FileSystem, [math]::Round($v.Size / 1GB) } else { 'absent' }
-        }
-        $parts = "$etatD".Split('|')
-        if ($etatD -eq 'absent') {
-            $srvOk = $false
-            $msg = "le disque D: n existe pas sur $ServeurFichiers. Ajouter un second disque (Proxmox > Hardware > Add > Hard Disk), le mettre en ligne et le formater en NTFS, lettre D, comme dans la procedure."
-        } elseif ($parts[0] -ne 'Fixed') {
-            $srvOk = $false
-            $msg = "D: sur $ServeurFichiers est un lecteur de type $($parts[0]) (souvent le lecteur CD de la VM), pas un disque de donnees. Changer la lettre du lecteur CD, puis creer le volume D: en NTFS."
-        } elseif ($parts[1] -ne 'NTFS') {
-            $srvOk = $false
-            $msg = "D: sur $ServeurFichiers est formate en $($parts[1]) : la procedure demande NTFS (quotas, FSRM)."
-        } else {
-            Write-Host ("  $ServeurFichiers : disque D: present, NTFS, {0} Go" -f $parts[2]) -ForegroundColor Gray
-        }
-    } catch {
-        $srvOk = $false
-        $msg = "impossible d interroger $ServeurFichiers : " + $_.Exception.Message
-    }
-}
-if (-not $srvOk) {
-    if (-not $script:Simu) { Arret $msg }
-    Write-Host ("  [simul]   le vrai lancement s arreterait ici : $msg") -ForegroundColor Yellow
-}
 Write-Host '  prerequis controles' -ForegroundColor Gray
 
 # ====================================================================== détection du TP Finance
@@ -620,8 +555,8 @@ if ($script:Tp) {
     # comptes sont déjà membres directs de GG_Finance (boucle des comptes),
     # donc G_Finance dans GG_Finance n'apporterait rien ; GG_Finance dans
     # G_Finance ouvrirait le partage du TP aux 8 salariés de la Finance, ce que
-    # le TP n'a pas prévu. Le partage de la PME, c'est \\SRV01\Finance$ par
-    # GG_Finance -> DL_Finance_Modif (AGDLP).
+    # le TP n'a pas prévu. Les droits de la PME passent par GG_Finance ->
+    # DL_Finance_Modif (AGDLP), posés à la main plus tard dans la procédure.
     Write-Host "  --- groupe $TpGroupe" -ForegroundColor Cyan
     $g = $script:Tp.Groupe
     if ($g) {
@@ -787,199 +722,8 @@ else {
 }
 Fin-Section
 
-# ====================================================================== 7. dossier de base H: dans l'annuaire
-Section '7. Dossier de base H: sur les 100 comptes'
-foreach ($u in $valides) {
-    $chemin = "\\$ServeurFichiers\Home`$\$($u.Login)"
-    $cpt = if ($script:AdOk) { Get-ADUser -Filter "SamAccountName -eq '$($u.Login)'" -Properties HomeDrive, HomeDirectory } else { $null }
-    if ($cpt -and $cpt.HomeDrive -eq 'H:' -and $cpt.HomeDirectory -eq $chemin) { Note-Deja "H: $chemin" }
-    # compte du TP Finance qui a déjà un dossier de base : on n'écrase rien
-    elseif ($cpt -and ($LoginsTp -contains $u.Login) -and ($cpt.HomeDirectory -or $cpt.HomeDrive)) {
-        Note-Deja ("H: du TP conserve pour {0} ({1} {2})" -f $u.Login, $cpt.HomeDrive, $cpt.HomeDirectory)
-    }
-    elseif (-not $cpt -and -not $script:Simu) { Note-Erreur "$($u.Login) introuvable, dossier de base non pose" }
-    else { [void](Faire "H: $chemin" { Set-ADUser -Identity $cpt -HomeDrive 'H:' -HomeDirectory $chemin }) }
-}
-Fin-Section
-
-# ====================================================================== 8. SRV01 : rôle, dossiers, partages, droits
-# Tout ce bloc s'exécute SUR le serveur de fichiers, par WinRM. Il renvoie une
-# ligne par action (Bloc, Etat, Quoi), affichée ici avec les mêmes compteurs.
-$blocSrv = {
-    param($Simu, $NetBios, $DaNom, [string[]]$Logins, $Partages, $Droits)
-    $ErrorActionPreference = 'Stop'
-    $res = New-Object System.Collections.Generic.List[object]
-    function R($b, $e, $q) { $res.Add([pscustomobject]@{ Bloc = $b; Etat = $e; Quoi = $q }) }
-    function Agir($b, $q, [scriptblock]$sb) {
-        if ($Simu) { R $b 'simul' $q; return }
-        try { & $sb | Out-Null; R $b 'cree' $q } catch { R $b 'erreur' ($q + ' : ' + $_.Exception.Message) }
-    }
-    # SID des comptes trop larges à retirer des dossiers protégés :
-    # Utilisateurs (BUILTIN), Utilisateurs authentifies, Tout le monde
-    $larges = 'S-1-5-32-545', 'S-1-5-11', 'S-1-1-0'
-
-    # rôle serveur de fichiers
-    foreach ($f in 'FS-FileServer', 'FS-Resource-Manager') {
-        if ((Get-WindowsFeature -Name $f).Installed) { R 'Role' 'deja' $f }
-        else { Agir 'Role' $f { Install-WindowsFeature -Name $f -IncludeManagementTools } }
-    }
-
-    # dossiers : 8 sous D:\Partages, plus D:\Home
-    $dossiers = @('D:\Partages') + @($Partages | ForEach-Object { $_.Chemin })
-    foreach ($d in $dossiers) {
-        if (Test-Path -LiteralPath $d) { R 'Dossiers' 'deja' $d }
-        else { Agir 'Dossiers' $d { New-Item -ItemType Directory -Path $d -Force } }
-    }
-
-    # partages : larges (Admins du domaine en total, GG_Tous-Salaries en modification),
-    # énumération basée sur l'accès, SMB chiffré. C'est NTFS qui décide.
-    $plein = "$NetBios\$DaNom"
-    $tous  = "$NetBios\GG_Tous-Salaries"
-    foreach ($p in $Partages) {
-        $existe = $null
-        try { $existe = Get-SmbShare -Name $p.Nom -ErrorAction Stop } catch { }
-        if ($existe) {
-            R 'Partages' 'deja' "\\$env:COMPUTERNAME\$($p.Nom) -> $($p.Chemin)"
-            $acces = @(Get-SmbShareAccess -Name $p.Nom | ForEach-Object { $_.AccountName })
-            foreach ($a in @(@{ C = $plein; D = 'Full' }, @{ C = $tous; D = 'Change' })) {
-                if ($acces -contains $a.C) { R 'Droits de partage' 'deja' "$($p.Nom) : $($a.C) $($a.D)" }
-                else { Agir 'Droits de partage' "$($p.Nom) : $($a.C) $($a.D)" { Grant-SmbShareAccess -Name $p.Nom -AccountName $a.C -AccessRight $a.D -Force } }
-            }
-        } else {
-            Agir 'Partages' "\\$env:COMPUTERNAME\$($p.Nom) -> $($p.Chemin)" {
-                New-SmbShare -Name $p.Nom -Path $p.Chemin -FullAccess $plein -ChangeAccess $tous `
-                    -FolderEnumerationMode AccessBased -EncryptData $true
-            }
-            $cree = $false
-            try { $cree = [bool](Get-SmbShare -Name $p.Nom -ErrorAction Stop) } catch { }
-            if ($Simu -or $cree) {
-                R 'Droits de partage' ($(if ($Simu) { 'simul' } else { 'cree' })) "$($p.Nom) : $plein Full, $tous Change"
-            }
-        }
-    }
-
-    # coupe l'héritage (en convertissant en explicite) et retire les comptes trop larges
-    function Proteger($chemin) {
-        if (-not (Test-Path -LiteralPath $chemin)) { R 'Droits NTFS' 'simul' "$chemin : heritage coupe, Utilisateurs retires"; return }
-        $di = Get-Item -LiteralPath $chemin
-        $acl = $di.GetAccessControl('Access')
-        $aRetirer = @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]) |
-                      Where-Object { $larges -contains $_.IdentityReference.Value })
-        if ($acl.AreAccessRulesProtected -and $aRetirer.Count -eq 0) { R 'Droits NTFS' 'deja' "$chemin : heritage coupe"; return }
-        Agir 'Droits NTFS' "$chemin : heritage coupe, Utilisateurs retires" {
-            $acl.SetAccessRuleProtection($true, $true)          # coupe l'heritage, garde une copie explicite
-            $di.SetAccessControl($acl)
-            $acl = $di.GetAccessControl('Access')
-            foreach ($r in $acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier])) {
-                if ($larges -contains $r.IdentityReference.Value) { [void]$acl.RemoveAccessRuleSpecific($r) }
-            }
-            $di.SetAccessControl($acl)
-        }
-    }
-    function Accorder($chemin, $compte, $droit) {
-        $voulu = [System.Security.AccessControl.FileSystemRights]$droit
-        if (Test-Path -LiteralPath $chemin) {
-            $acl = (Get-Item -LiteralPath $chemin).GetAccessControl('Access')
-            $deja = @($acl.Access | Where-Object {
-                $_.IdentityReference.Value -eq $compte -and $_.AccessControlType -eq 'Allow' -and
-                (($_.FileSystemRights -band $voulu) -eq $voulu) })
-            if ($deja.Count) { R 'Droits NTFS' 'deja' "$chemin : $compte $droit"; return }
-        }
-        Agir 'Droits NTFS' "$chemin : $compte $droit" {
-            $di = Get-Item -LiteralPath $chemin
-            $acl = $di.GetAccessControl('Access')
-            $regle = New-Object System.Security.AccessControl.FileSystemAccessRule(
-                $compte, $voulu, 'ContainerInherit,ObjectInherit', 'None', 'Allow')
-            $acl.AddAccessRule($regle)
-            $di.SetAccessControl($acl)
-        }
-    }
-
-    # droits NTFS sur les groupes DL_ (AGDLP)
-    foreach ($c in @($Droits | ForEach-Object { $_.Chemin } | Select-Object -Unique)) { Proteger $c }
-    foreach ($d in $Droits) { Accorder $d.Chemin "$NetBios\$($d.Groupe)" $d.Droit }
-
-    # D:\Home : personne ne parcourt la racine ; chacun a son dossier, à lui seul
-    Proteger 'D:\Home'
-    foreach ($l in $Logins) {
-        $h = "D:\Home\$l"
-        if (Test-Path -LiteralPath $h) { R 'Dossiers H:' 'deja' $h }
-        else { Agir 'Dossiers H:' $h { New-Item -ItemType Directory -Path $h -Force } }
-        Accorder $h "$NetBios\$l" 'FullControl'
-    }
-    $res
-}
-
-Section "8. $ServeurFichiers : role, dossiers, 9 partages, droits NTFS, dossiers H:"
-if (-not $srvOk) {
-    Write-Host "  [simul]   $ServeurFichiers non joignable ou sans disque D: : bloc ignore en simulation" -ForegroundColor Yellow
-} else {
-    try {
-        $lignes = Invoke-Command -ComputerName $ServeurFichiers -ScriptBlock $blocSrv -ErrorAction Stop `
-            -ArgumentList $script:Simu, $netbios, $daNom, ([string[]]@($valides | ForEach-Object { $_.Login })), $Partages, $DroitsNtfs
-        $courant = ''
-        foreach ($l in $lignes) {
-            if ($l.Bloc -ne $courant) { $courant = $l.Bloc; Write-Host ("  --- $courant") -ForegroundColor Cyan }
-            switch ($l.Etat) {
-                'deja'   { Note-Deja $l.Quoi $(if ($l.Bloc -eq 'Partages') { 'Partages' }) }
-                'cree'   { Write-Host ('  cree      ' + $l.Quoi) -ForegroundColor Green; $script:Stats[$script:Bloc].Crees++; if ($l.Bloc -eq 'Partages') { Compter 'Partages' } }
-                'simul'  { Write-Host ('  [simul]   ' + $l.Quoi) -ForegroundColor Yellow; $script:Stats[$script:Bloc].Crees++; if ($l.Bloc -eq 'Partages') { Compter 'Partages' } }
-                'erreur' { Note-Erreur $l.Quoi }
-            }
-        }
-    } catch {
-        Note-Erreur ("$ServeurFichiers : " + $_.Exception.Message)
-    }
-}
-Fin-Section
-
-# ====================================================================== 9. la GPO du lecteur S:
-Section "9. GPO $GpoLecteurS (lecteur S: de la Finance)"
-$dnFinance = "OU=Finance,$dnUtil"
-$gpo = $null
-if ($script:AdOk) { try { $gpo = Get-GPO -Name $GpoLecteurS -Domain $Domaine -ErrorAction Stop } catch { } }
-if ($gpo) { Note-Deja "GPO $GpoLecteurS" }
-elseif (Faire "GPO $GpoLecteurS" { New-GPO -Name $GpoLecteurS -Domain $Domaine -Comment "Lecteur S: vers \\$ServeurFichiers\Finance`$ (deploy-pme-100.ps1)" }) {
-    if (-not $script:Simu) { $gpo = Get-GPO -Name $GpoLecteurS -Domain $Domaine }
-}
-
-$liens = @()
-if ($script:AdOk -and (Test-DN $dnFinance)) { $liens = @((Get-GPInheritance -Target $dnFinance -Domain $Domaine).GpoLinks | ForEach-Object { $_.DisplayName }) }
-if ($liens -contains $GpoLecteurS) { Note-Deja "lien sur $dnFinance" }
-else { [void](Faire "lien sur $dnFinance" { New-GPLink -Name $GpoLecteurS -Target $dnFinance -Domain $Domaine -LinkEnabled Yes }) }
-
-# La préférence « lecteur mappé » : Drives.xml dans SYSVOL, déclaration de
-# l'extension côté client, et numéro de version utilisateur incrémenté.
-$xmlChemin = if ($gpo) { "\\$Domaine\SYSVOL\$Domaine\Policies\{$($gpo.Id)}\User\Preferences\Drives\Drives.xml" } else { '' }
-if (-not $gpo -and -not $script:Simu) { Note-Erreur "GPO $GpoLecteurS absente : lecteur S: non pose" }
-elseif ($xmlChemin -and (Test-Path -LiteralPath $xmlChemin)) { Note-Deja "lecteur S: -> \\$ServeurFichiers\Finance`$ (Drives.xml)" }
-else {
-    [void](Faire "lecteur S: -> \\$ServeurFichiers\Finance`$ (Mettre a jour, Reconnecter)" {
-        $racineGpo = "\\$Domaine\SYSVOL\$Domaine\Policies\{$($gpo.Id)}"
-        New-Item -ItemType Directory -Path (Split-Path $xmlChemin) -Force | Out-Null
-        $quand = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-        $uid = '{' + ([guid]::NewGuid().ToString().ToUpper()) + '}'
-        $xml = '<?xml version="1.0" encoding="utf-8"?>' +
-            '<Drives clsid="{8FDDCC1A-0C3C-43cd-A6B4-71A6DF20DA8C}">' +
-            '<Drive clsid="{935D1B74-9CB8-4e3c-9914-7DD559B7A417}" name="S:" status="S:" image="2" changed="' + $quand + '" uid="' + $uid + '">' +
-            '<Properties action="U" thisDrive="NOCHANGE" allDrives="NOCHANGE" userName="" path="\\' + $ServeurFichiers + '\Finance$" label="Finance" persistent="1" useLetter="1" letter="S"/>' +
-            '</Drive></Drives>'
-        [IO.File]::WriteAllText($xmlChemin, $xml, (New-Object System.Text.UTF8Encoding($false)))
-        # extension « Mappages de lecteurs » des préférences, côté utilisateur
-        $ext = '[{00000000-0000-0000-0000-000000000000}{2EA1A81B-48E5-45E9-8BB7-A6E3AC170006}]' +
-               '[{5794DAFD-BE60-433F-88A2-1A31939AC01F}{2EA1A81B-48E5-45E9-8BB7-A6E3AC170006}]'
-        $dnGpo = "CN={$($gpo.Id)},CN=Policies,CN=System,$dn"
-        $obj = Get-ADObject -Identity $dnGpo -Properties versionNumber
-        $version = [int]$obj.versionNumber + 65536            # +1 sur la partie utilisateur
-        Set-ADObject -Identity $dnGpo -Replace @{ gPCUserExtensionNames = $ext; versionNumber = $version }
-        $ini = Join-Path $racineGpo 'GPT.INI'
-        "[General]`r`nVersion=$version`r`n" | Out-File -LiteralPath $ini -Encoding ASCII
-    })
-}
-Fin-Section
-
-# ====================================================================== export des mots de passe
-Section '10. Mots de passe initiaux'
+# ====================================================================== 7. export des mots de passe
+Section '7. Mots de passe initiaux'
 if ($script:Simu) {
     Write-Host "  [simul]   $CsvMdp ne sera ecrit qu au vrai lancement" -ForegroundColor Yellow
 } elseif ($script:MotsDePasse.Count -eq 0) {
@@ -1001,12 +745,13 @@ $t = $script:Totaux
 Write-Host ''
 Write-Host ('=' * 72) -ForegroundColor Cyan
 $prefixe = if ($script:Simu) { 'SIMULATION, apres lancement : ' } else { 'Resultat : ' }
-$bilan = '{0} OU, {1} comptes, {2} groupes, {3} partages, {4} ordinateurs, {5} adm' -f `
-    $t.OU, $t.Comptes, $t.Groupes, $t.Partages, $t.Ordinateurs, $t.Adm
-$attendu = '22 OU, 100 comptes, 22 groupes, 9 partages, 38 ordinateurs, 6 adm'
+$bilan = '{0} OU, {1} comptes, {2} groupes, {3} ordinateurs, {4} adm' -f `
+    $t.OU, $t.Comptes, $t.Groupes, $t.Ordinateurs, $t.Adm
+$attendu = '22 OU, 100 comptes, 22 groupes, 38 ordinateurs, 6 adm'
 $couleur = if ($bilan -eq $attendu -and $script:NbErreurs -eq 0) { 'Green' } else { 'Yellow' }
 Write-Host (' ' + $prefixe + $bilan) -ForegroundColor $couleur
 if ($bilan -ne $attendu) { Write-Host (' attendu : ' + $attendu) -ForegroundColor Yellow }
+Write-Host ' Suite a la main, dans la procedure : serveur de fichiers, partages, droits NTFS des DL_, lecteurs.' -ForegroundColor Gray
 if ($script:Tp) {
     $etatG = if ($script:Tp.Groupe) { "$TpGroupe conserve" } else { "$TpGroupe absent" }
     Write-Host (' TP Finance repris : {0} compte(s) dont {1} parmi les 100, {2} (voir section 3 bis)' -f `
